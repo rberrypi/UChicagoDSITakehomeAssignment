@@ -69,7 +69,7 @@ class ProcessFile:
 
         lock_fd = None
         try:
-            lock_fd = os.open(lock_file_path, os.O_CREAT | os.O_EXCL | os.O_RDWR)
+            lock_fd = os.open(lock_file_path, os.O_CREAT | os.O_EXCL | os.O_RDWR | os.O_DIRECT | os.O_SYNC)
             self.process(file)
         except Exception as Ex:
             pass
