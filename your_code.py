@@ -5,8 +5,9 @@
 import glob
 import os
 import sys
+import threading
 import time
-from typing import Callable
+from typing import Callable, Optional
 
 from watchdog.events import FileSystemEvent
 from watchdog.observers import Observer
@@ -19,7 +20,7 @@ class ProcessFile:
     This class acts as a process function call object wih the call operator.
     """
 
-    def __init__(self, logger: Callable, rolling_square: Callable, seconds_in_min: float):
+    def __init__(self, logger: Callable, rolling_square: Callable, seconds_in_min: Optional[float] = 60.0):
         """
         Constructor
         :param logger:
@@ -33,22 +34,37 @@ class ProcessFile:
         self.log = logger
         self.rolling_square = rolling_square
         self._lock_directory = ".UCWorkerDFLocks"
+        self.process_fn_critical_section_lock = threading.Semaphore(1)
 
     def __call__(self, event: FileSystemEvent):
         """
-        Call operator called from event handler that is responsible for processing files and managing locks
+        Call operator called from event handler that is responsible for delegating file processing to the wrapper
+        function
         :param event:
             The file system event from the event handler
         :return:
             None
         """
-        file: str = event.src_path.strip()
+        self.process_function_wrapper(event.src_path.strip())
+
+    def process_function_wrapper(self, file):
+        """
+        Wrapper for the process function. This takes care of locking and calling the process function that actually
+        processes the file.
+        :param file:
+            The URL of the file to process
+        :return:
+            None
+        """
         filename: str = os.path.basename(file)
         try:
-            self.lock(filename)
-            self.process(file)
-        except FileExistsError as lockEx: ...
-        except Exception as Ex: ...
+            with self.process_fn_critical_section_lock:
+                self.lock(filename)
+                self.process(file)
+        except FileExistsError as lockEx:
+            ...
+        except Exception as Ex:
+            self.process_exception_handler(Ex)
 
     def lock(self, filename: str) -> None:
         """
@@ -75,10 +91,20 @@ class ProcessFile:
         time.sleep(processing_time * self.seconds_in_min)
         self.log(processing_time, self.rolling_square(processing_time))
 
+    def process_exception_handler(self, exception: Exception):
+        """
+        Function to handle exceptions that are thrown during processing of the file
+        :param exception:
+            Reference to the exception object that is thrown
+        :return:
+            None
+        """
+        pass
+
 
 def process_existing(directory: str, process_fn: ProcessFile) -> None:
     """
-    Function to process already existing files
+    Function to process existing unprocessed files
     :param directory:
         The directory where the files to be processed can be found
     :param process_fn:
@@ -87,16 +113,10 @@ def process_existing(directory: str, process_fn: ProcessFile) -> None:
         None
     """
     for file in glob.glob(os.path.join(directory, '*.txt')):
-        try:
-            process_fn.lock(os.path.basename(file))
-            process_fn.process(file)
-        except FileExistsError as lockEx:
-            continue
-        except Exception as ex:
-            pass
+        process_fn.process_function_wrapper(file)
 
 
-def main(directory: str, seconds_in_minute: float) -> None:
+def main(directory: str, seconds_in_minute: Optional[float] = 60.0) -> None:
     """
     Main function
     :param directory:
@@ -104,6 +124,7 @@ def main(directory: str, seconds_in_minute: float) -> None:
     :param seconds_in_minute:
         For simulating how long a minute is.
     :return:
+        None
     """
     os.makedirs('.UCWorkerDFLocks', exist_ok=True)
 
@@ -116,10 +137,10 @@ def main(directory: str, seconds_in_minute: float) -> None:
     directory_observer = Observer()
     directory_observer.schedule(directory_monitor, path=directory, recursive=False)
 
-    process_existing(directory, process_fn)
-
     # Start the observers
     directory_observer.start()
+
+    process_existing(directory, process_fn)
 
     # Join all the observers.
     # This is a blocking call
